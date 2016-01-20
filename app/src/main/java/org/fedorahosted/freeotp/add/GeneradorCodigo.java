@@ -19,20 +19,19 @@
  */
 
 package org.fedorahosted.freeotp.add;
-import java.util.Locale;
-import org.fedorahosted.freeotp.R;
-import org.fedorahosted.freeotp.Token;
 import org.fedorahosted.freeotp.TokenCode;
-import android.app.Activity;
 import android.content.Context;
-import android.content.Intent;
-import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Message;
 import android.util.Log;
-import android.widget.Toast;
-import com.google.gson.Gson;
+
+import java.nio.ByteBuffer;
+import java.security.InvalidKeyException;
+import java.security.NoSuchAlgorithmException;
+
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 
 public class GeneradorCodigo{
 
@@ -44,6 +43,17 @@ public class GeneradorCodigo{
     public static final String FAILURE_REASON = "failure_reason";
     public static final String GOOD_REASON = "good_reason";
 
+    private String algo;
+    private byte[] secret;
+    private int digits;
+    private long counter;
+    private int period;
+
+    /**
+     *
+     * @param context
+     * @return
+     */
     public static synchronized GeneradorCodigo getInstance(Context context) {
         if (generadorCodigo == null) {
             generadorCodigo = new GeneradorCodigo(context);
@@ -52,73 +62,93 @@ public class GeneradorCodigo{
         return generadorCodigo;
     }
 
-
+    /**
+     *
+     * @param context
+     */
     private GeneradorCodigo(Context context) {
-
         this.context = context;
-
+        // algoritmo
+        algo = "sha1";
+        // digitos
+        digits = 6;
+        // periodo
+        period = 20; // 20 segundos // TODO: Cambiar por el bueno
+        // secret
+        secret = "6A4E94A11E9E723F690B60C3B351EEB4".getBytes(); //TODO: Obtener el android ID
     }
 
     public void generarCodigo(Handler handler){
         this.mHandler = handler;
 
-        String tarjeta = "4522105577707772";
-        String android_id = "6A4E94A11E9E723F690B60C3B351EEB4";
-        String secret_ = "AAAAAAAA";
-        String sha = "sha1";
-        int tiempo = 20;
-        int digit = 6;
+        TokenCode codes = generateCodes();
 
-        String issuer = Uri.encode(tarjeta);
-        String label = Uri.encode(android_id);
-        String secret = Uri.encode(secret_);
-        String algorithm = sha;
-        int interval = (tiempo);
-        int digits = digit;
+        Log.d("AddActivity ", "CODE = " + codes.getCurrentCode());
 
-        String uri = String.format(Locale.US,
-                "otpauth://%sotp/%s:%s?secret=%s&algorithm=%s&digits=%d&period=%d",
-                "t", issuer, label,
-                secret, algorithm, digits, interval);
+        String codigo = codes.getCurrentCode();
 
-        try {
-            Gson gson = new Gson();
-            Token token = new Token(uri);
-            TokenCode codes = token.generateCodes();
-
-
-            Log.d("AddActivity ", "ID = " + token.getID());
-            Log.d("AddActivity ", "GSON = " + gson.toJson(token));
-            Log.d("AddActivity ", "CODE = " + codes.getCurrentCode());
-
-            String codigo = codes.getCurrentCode();
-
-
-
-            Message msg = mHandler.obtainMessage(CODE_OK);
-            Bundle bundle = new Bundle();
-            bundle.putString(GOOD_REASON,codigo);
-            msg.setData(bundle);
-            mHandler.sendMessage(msg);
-
-
-
-
-        } catch (Token.TokenUriInvalidException e) {
-
-            Message msg = mHandler.obtainMessage(CODE_FAIL);
-            Bundle bundle = new Bundle();
-            bundle.putString(FAILURE_REASON, "No se pudo generar código");
-            msg.setData(bundle);
-            mHandler.sendMessage(msg);
-            //Toast.makeText(this, R.string.invalid_token, Toast.LENGTH_SHORT).show();
-            e.printStackTrace();
-        }
+        Message msg = mHandler.obtainMessage(CODE_OK);
+        Bundle bundle = new Bundle();
+        bundle.putString(GOOD_REASON,codigo);
+        msg.setData(bundle);
+        mHandler.sendMessage(msg);
 
     }
 
+    private String getHOTP(long counter) {
+        // Encode counter in network byte order
+        ByteBuffer bb = ByteBuffer.allocate(8);
+        bb.putLong(counter);
 
+        // Create digits divisor
+        int div = 1;
+        for (int i = digits; i > 0; i--)
+            div *= 10;
 
+        // Create the HMAC
+        try {
+            Mac mac = Mac.getInstance("Hmac" + algo);
+            mac.init(new SecretKeySpec(secret, "Hmac" + algo));
 
+            // Do the hashing
+            byte[] digest = mac.doFinal(bb.array());
 
+            // Truncate
+            int binary;
+            int off = digest[digest.length - 1] & 0xf;
+            binary = (digest[off] & 0x7f) << 0x18;
+            binary |= (digest[off + 1] & 0xff) << 0x10;
+            binary |= (digest[off + 2] & 0xff) << 0x08;
+            binary |= (digest[off + 3] & 0xff);
+            binary = binary % div;
+
+            // Zero pad
+            String hotp = Integer.toString(binary);
+            while (hotp.length() != digits)
+                hotp = "0" + hotp;
+
+            return hotp;
+        } catch (InvalidKeyException e) {
+            e.printStackTrace();
+        } catch (NoSuchAlgorithmException e) {
+            e.printStackTrace();
+        }
+
+        return "";
+    }
+
+    // NOTE: This may change internal data. You MUST save the token immediately.
+    public TokenCode generateCodes() {
+
+        Log.d("Token","generateCodes ");
+        long cur = System.currentTimeMillis();
+
+        Log.d("Token","TOTP ");
+        long counter = cur / 1000 / period;
+
+        return new TokenCode(getHOTP(counter + 0),
+                (counter + 0) * period * 1000,
+                (counter + 1) * period * 1000);
+
+    }
 }
